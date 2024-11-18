@@ -68,7 +68,9 @@ class User:
                 action_name TEXT UNIQUE,
                 key_value TEXT UNIQUE,
                 tc TEXT, 
-                su2 TEXT                                         
+                su2 TEXT,
+                index_session TEXT,
+                session_id TEXT                                      
             )
             ''')
             self.conn_with_bdd_user.commit()
@@ -186,11 +188,32 @@ class User:
         else:
             self.cursor_user.execute('INSERT INTO access_token_user_table (obj_id, action_name, key_value, tc, su2) VALUES (?, ?, ?, ?, ?)', 
                                 (id_obj, action, serialized_message,str(tc), str(su2)))
-            
+
             print("have been successfully stored")
             
             # Commit des changements dans la base de données
             self.conn_with_bdd_user.commit()
+
+#Store Decrypted Key
+    async def request_session_id_for_action(self, action, obj_id):
+        payload = {
+            "action":action,
+            "event":"generate-session-id"
+        }
+        
+        response_server = await self.post_request(port='5684', path='call_sensor', payload=payload)
+        print("payload: ",response_server.payload)
+        
+        if(response_server.payload):
+                decoded_rep = response_server.payload.decode('utf-8')
+                print(decoded_rep)
+
+                """
+                index = decoded_rep['index']
+                session_id = decoded_rep['session_id']
+                self.cursor_sensor.execute('update access_token_user_table set index_session=?, session_id=? WHERE action = ?, and obj_id=?', (index, session_id, action,obj_id))
+                self.conn_with_bdd_user.commit()
+                """
     
     async def request_access_to_action(self,action):
         id_obj = 0
@@ -199,12 +222,14 @@ class User:
         SU2 = 0
         # Récupération du chemin de fichier depuis la base de données
         self.cursor_user.execute('SELECT * FROM access_token_user_table WHERE action_name = ?', (action,)) 
-        rows = self.cursor_user.fetchall()  
+        rows = self.cursor_user.fetchone()  
 
         
         print("Rows: ",rows)
+        if rows !=None: 
+            print("session id: ",str(rows[6]))
 
-        if rows == [] :
+        if rows == None :
             print("credentials dosn't exist")
             response = await self.request_credential_of_action(action=action)
             decrypted_token = self.decrypt_token_for_action(response['token_bytes'])
@@ -213,13 +238,18 @@ class User:
                 print("get credential and try to access")
                 await self.request_access_to_action(action)
 
-        elif rows !=[]:  # Indentation correcte ici
-            for row in rows:
-                id_obj = row[1]
-                #action = row[2]
-                token = row[3]
-                TC = row[4]
-                SU2 = row[5]
+        elif rows !=None and rows[6] == None:
+             id_obj = rows[1]
+             await self.request_session_id_for_action(action=action, obj_id=id_obj)
+             #await self.request_access_to_action(action)
+
+        elif rows !=None:  # Indentation correcte ici
+            
+            id_obj = rows[1]
+            #action = row[2]
+            token = rows[3]
+            TC = rows[4]
+            SU2 = rows[5]
 
             credential = {
                 "SU2":SU2,
@@ -232,7 +262,7 @@ class User:
 
             cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
             print("hashed key:",hashed_key)
-            session_id = '21345'
+             
             ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=session_id)
 
             payload = {
@@ -242,30 +272,42 @@ class User:
                 "event":'request-access-to-action'
             }
 
-            #print("payload is: ",payload)
-            
-            #-----------------------------------------------------------------------------------
+            #call sensor server
+            response_server = await self.post_request(port='5684', path='call_sensor', payload=payload)
+
+            if(response_server.payload):
+                decoded_rep = response_server.payload.decode('utf-8')
+
+                if decoded_rep=='':
+                    new_session_id = sha256(session_id).digest()
+                    self.cursor_user.execute('update session_user_table set session_id=? WHERE index_session = ?', (new_session_id, index)) 
+                    self.conn_with_bdd_user.commit()
+
+                print("SENSOR RESPONSE: ",decoded_rep)
+        #-----------------------------------------------------------------------------------
+        """
+        result=cipher.decrypt(ciphertextAssociatedData, associatedData='4545')
+        print(result)
+        """
+    
+    async def post_request(self, port, path, payload):
+        #-----------------------------------------------------------------------------------
             # Création du contexte client
             protocol = await aiocoap.Context.create_client_context()
-            
+            uri = f"coap://localhost:{port}/{path}"
+            print("URI: ",uri)
             # Préparation du message
-            request = aiocoap.Message(code=aiocoap.POST, uri="coap://localhost:5684/call_sensor")
+            request = aiocoap.Message(code=aiocoap.POST, uri=uri)
             
             request.payload = json.dumps(payload).encode('utf-8')
         
             # Envoi de la requête
             response = await protocol.request(request).response
 
-            if(response.payload):
-                server_response = response.payload.decode('utf-8')
+            print("response: ",response)
 
-                print("SENSOR RESPONSE: ",server_response)
-        #-----------------------------------------------------------------------------------
-        """
-        result=cipher.decrypt(ciphertextAssociatedData, associatedData='4545')
-        print(result)
-        """
-        
+            return response
+
 async def main():
 
     user = User('SS512')

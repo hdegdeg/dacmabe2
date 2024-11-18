@@ -19,6 +19,7 @@ from aiocoap.oscore import BaseSecurityContext
 import charm.toolbox.symcrypto
 import ast
 from typing import List, Tuple
+import random
 
 class Sensor(resource.Resource):
     def __init__(self,group,actions):
@@ -63,10 +64,18 @@ class Sensor(resource.Resource):
         if 'request-access-to-action' == event:
 
             action = data['action']
+            index = data['index']
             credential = data['credential']
-            response = self.check_access(credential=credential, action=action)
+            response = self.check_access(credential=credential, action=action, index=index)
 
             return Message(code=Code.CONTENT, payload= response.encode('utf-8'))
+        
+        elif 'generate-session-id' == event:
+
+            action = data['action']
+            response = self.generate_session_id(action=action)
+            return Message(code=Code.CONTENT, payload= response.encode('utf-8'))
+              
 
 #---------------------------------------------------------------------------------------------------------
 
@@ -91,6 +100,15 @@ class Sensor(resource.Resource):
                 id_obj TEXT PRIMARY KEY ,
                 su1 TEXT UNIQUE NOT NULL,
                 prime TEXT UNIQUE NOT NULL
+            )
+            ''')
+            
+            self.conn_with_bdd_sensor.commit()
+
+            self.cursor_sensor.execute('''
+            CREATE TABLE IF NOT EXISTS session_user_table (
+                user_index INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT UNIQUE NOT NULL
             )
             ''')
             
@@ -184,6 +202,46 @@ class Sensor(resource.Resource):
         # Maintenir le serveur actif
         await asyncio.get_running_loop().create_future()    
 
+    def generate_session_id(self,action):
+
+        #verify if action exist in action_token_table
+        self.cursor_sensor.execute('SELECT id FROM action_token_table WHERE action_name = ?', (action,)) 
+        rows = self.cursor_sensor.fetchone()
+        index = rows[0]
+
+        if rows !=[]:
+
+            session_id = random.getrandbits(256)
+            self.cursor_sensor.execute('INSERT INTO session_user_table (session_id) VALUES (?)',(str(session_id)))
+                
+            # Commit des changements dans la base de données
+            self.conn_with_bdd_user.commit()
+
+            # Get last infos inserted
+            self.cursor_sensor.execute('SELECT * FROM session_user_table WHERE session_id = ?', (str(session_id),)) 
+            rows = self.cursor_sensor.fetchone()
+            index = rows[0]
+
+            return index,session_id
+        
+        else: return "action dosn't exist"
+
+        
+
+    def get_session_id_of_user(self,index):
+        self.cursor_sensor.execute('SELECT * FROM session_user_table WHERE user_index = ?', (index,)) 
+        rows = self.cursor_sensor.fetchone() 
+        
+        
+        if rows:
+            print("key found in database")
+        else:
+            session_id =  rows[1] 
+            return session_id
+            
+            # Commit des changements dans la base de données
+        
+
     def reconstruct_secret(self, shares: List[Tuple[int, int]], threshold: int, PRIME) -> int:
         def _lagrange_interpolation(x: int, x_s: List[int], y_s: List[int]) -> int:
             def _basis(j: int) -> int:
@@ -205,7 +263,7 @@ class Sensor(resource.Resource):
         x_s, y_s = zip(*shares)
         return _lagrange_interpolation(0, x_s, y_s)
 
-    def check_access(self, credential, action):
+    def check_access(self, credential, action,index):
         # Récupération du chemin de fichier depuis la base de données
         self.cursor_sensor.execute('SELECT * FROM action_token_table WHERE action_name = ?', (action,)) 
         row = self.cursor_sensor.fetchone() 
@@ -220,9 +278,11 @@ class Sensor(resource.Resource):
 
         hashed_key = sha256(objectToBytes(Key, self.group)).digest()
         print("hashed key:",hashed_key)
+
+        session_id = self.get_session_id_of_user(index=index)
         
         cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
-        result=cipher.decrypt(credential, associatedData='21345')
+        result=cipher.decrypt(credential, associatedData=session_id)
 
         print("result befor decoded: ",result)
         decoded_result = result.decode('utf-8')
@@ -263,6 +323,10 @@ class Sensor(resource.Resource):
         
          
         if int(RVO1)==int(RVO2):
+            new_session_id = sha256(session_id).digest()
+            self.cursor_sensor.execute('update session_user_table set session_id=? WHERE user_index = ?', (new_session_id, index)) 
+            self.conn_with_bdd_user.commit()
+
             return "access granted"
         else:
             return "you don't have access "
