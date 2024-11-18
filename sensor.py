@@ -64,17 +64,26 @@ class Sensor(resource.Resource):
         if 'request-access-to-action' == event:
 
             action = data['action']
-            index = data['index']
+            index_session = data['index_session']
             credential = data['credential']
-            response = self.check_access(credential=credential, action=action, index=index)
+            response = self.check_access(credential=credential, action=action, index=index_session)
 
             return Message(code=Code.CONTENT, payload= response.encode('utf-8'))
         
         elif 'generate-session-id' == event:
 
             action = data['action']
-            response = self.generate_session_id(action=action)
-            return Message(code=Code.CONTENT, payload= response.encode('utf-8'))
+            index,session_id = self.generate_session_id(action=action)
+
+            response = {
+                "index":index,
+                "session_id":str(session_id)
+            }
+
+            encoded_res =  json.dumps(response).encode('utf-8')
+
+             
+            return Message(code=Code.CONTENT, payload= encoded_res)
               
 
 #---------------------------------------------------------------------------------------------------------
@@ -203,20 +212,23 @@ class Sensor(resource.Resource):
         await asyncio.get_running_loop().create_future()    
 
     def generate_session_id(self,action):
-
+        
         #verify if action exist in action_token_table
         self.cursor_sensor.execute('SELECT id FROM action_token_table WHERE action_name = ?', (action,)) 
         rows = self.cursor_sensor.fetchone()
         index = rows[0]
 
         if rows !=[]:
-
             session_id = random.getrandbits(256)
-            self.cursor_sensor.execute('INSERT INTO session_user_table (session_id) VALUES (?)',(str(session_id)))
-                
-            # Commit des changements dans la base de données
-            self.conn_with_bdd_user.commit()
+            # Convertir en bytes et hacher
+            session_id_bytes = str(session_id).encode('utf-8')
+            session_id = sha256(session_id_bytes).digest()
 
+            self.cursor_sensor.execute(
+                                            'INSERT INTO session_user_table (session_id) VALUES (?)', 
+                                            (str(session_id),)  # Un tuple avec une virgule
+                                        )
+            self.conn_with_bdd_sensor.commit()
             # Get last infos inserted
             self.cursor_sensor.execute('SELECT * FROM session_user_table WHERE session_id = ?', (str(session_id),)) 
             rows = self.cursor_sensor.fetchone()
@@ -229,12 +241,13 @@ class Sensor(resource.Resource):
         
 
     def get_session_id_of_user(self,index):
+
         self.cursor_sensor.execute('SELECT * FROM session_user_table WHERE user_index = ?', (index,)) 
         rows = self.cursor_sensor.fetchone() 
         
         
-        if rows:
-            print("key found in database")
+        if rows == None:
+            print("key dosn't found in database")
         else:
             session_id =  rows[1] 
             return session_id
@@ -264,6 +277,7 @@ class Sensor(resource.Resource):
         return _lagrange_interpolation(0, x_s, y_s)
 
     def check_access(self, credential, action,index):
+
         # Récupération du chemin de fichier depuis la base de données
         self.cursor_sensor.execute('SELECT * FROM action_token_table WHERE action_name = ?', (action,)) 
         row = self.cursor_sensor.fetchone() 
@@ -281,8 +295,20 @@ class Sensor(resource.Resource):
 
         session_id = self.get_session_id_of_user(index=index)
         
-        cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
-        result=cipher.decrypt(credential, associatedData=session_id)
+        # Utiliser ast.literal_eval pour convertir depuis TEXT to Byte reèl
+        session_id_byte = eval(session_id)
+
+        # Utiliser base64 pour interpréter le contenu de manière sécurisée
+        session_id_base64 = base64.b64encode(session_id_byte).decode('utf-8')
+        
+
+        try:
+            cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
+            result=cipher.decrypt(credential, associatedData=session_id_base64)
+        except Exception as e:
+            return "credential invalid"
+        
+        
 
         print("result befor decoded: ",result)
         decoded_result = result.decode('utf-8')
@@ -323,9 +349,15 @@ class Sensor(resource.Resource):
         
          
         if int(RVO1)==int(RVO2):
-            new_session_id = sha256(session_id).digest()
+            print("before encode: ",session_id_base64)
+            
+            session_id_byte = session_id_base64.encode('utf-8')
+
+            print("after encode:",session_id_byte)
+
+            new_session_id = sha256(session_id_byte).digest()
             self.cursor_sensor.execute('update session_user_table set session_id=? WHERE user_index = ?', (new_session_id, index)) 
-            self.conn_with_bdd_user.commit()
+            self.conn_with_bdd_sensor.commit()
 
             return "access granted"
         else:

@@ -205,15 +205,22 @@ class User:
         print("payload: ",response_server.payload)
         
         if(response_server.payload):
-                decoded_rep = response_server.payload.decode('utf-8')
-                print(decoded_rep)
+                server_response = response_server.payload.decode('utf-8')
 
-                """
-                index = decoded_rep['index']
-                session_id = decoded_rep['session_id']
-                self.cursor_sensor.execute('update access_token_user_table set index_session=?, session_id=? WHERE action = ?, and obj_id=?', (index, session_id, action,obj_id))
+                print("server_response:",server_response)
+
+                decoded_response = json.loads(server_response)
+        
+                
+                print("index: ",decoded_response['index'])
+                print("index: ",decoded_response['session_id'])
+
+                
+                index = decoded_response['index']
+                session_id = decoded_response['session_id']
+                self.cursor_user.execute('update access_token_user_table set index_session=?, session_id=? WHERE action_name = ? and obj_id=?', (index, str(session_id), action, obj_id))
                 self.conn_with_bdd_user.commit()
-                """
+                
     
     async def request_access_to_action(self,action):
         id_obj = 0
@@ -226,8 +233,7 @@ class User:
 
         
         print("Rows: ",rows)
-        if rows !=None: 
-            print("session id: ",str(rows[6]))
+        
 
         if rows == None :
             print("credentials dosn't exist")
@@ -241,7 +247,7 @@ class User:
         elif rows !=None and rows[6] == None:
              id_obj = rows[1]
              await self.request_session_id_for_action(action=action, obj_id=id_obj)
-             #await self.request_access_to_action(action)
+             await self.request_access_to_action(action)
 
         elif rows !=None:  # Indentation correcte ici
             
@@ -250,6 +256,8 @@ class User:
             token = rows[3]
             TC = rows[4]
             SU2 = rows[5]
+            index_session = rows[6]
+            session_id = rows[7]
 
             credential = {
                 "SU2":SU2,
@@ -261,13 +269,20 @@ class User:
             print("token from BDD (USER): ",token)
 
             cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
-            print("hashed key:",hashed_key)
+
+            # Utiliser ast.literal_eval pour convertir depuis TEXT to Byte reèl
+            byte_value = eval(session_id)
+
+            # Utiliser base64 pour interpréter le contenu de manière sécurisée
+            base64_value = base64.b64encode(byte_value).decode('utf-8')
+          
              
-            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=session_id)
+            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=base64_value)
 
             payload = {
                 "id_obj":id_obj,
                 "action":action,
+                "index_session":index_session,
                 "credential":ciphertextAssociatedData,
                 "event":'request-access-to-action'
             }
@@ -278,9 +293,13 @@ class User:
             if(response_server.payload):
                 decoded_rep = response_server.payload.decode('utf-8')
 
-                if decoded_rep=='':
-                    new_session_id = sha256(session_id).digest()
-                    self.cursor_user.execute('update session_user_table set session_id=? WHERE index_session = ?', (new_session_id, index)) 
+                if decoded_rep=='access granted':
+                    print("before byte: ",base64_value)
+                    session_id_bytes = str(base64_value).encode('utf-8')
+                    print("after byte: ",base64_value)
+                    new_session_id = sha256(session_id_bytes).digest()
+                    print("hashed: ",base64_value)
+                    self.cursor_user.execute('update access_token_user_table set session_id=? WHERE index_session = ?', (new_session_id, index_session)) 
                     self.conn_with_bdd_user.commit()
 
                 print("SENSOR RESPONSE: ",decoded_rep)
