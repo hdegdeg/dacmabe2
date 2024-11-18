@@ -224,13 +224,16 @@ class Sensor(resource.Resource):
             session_id_bytes = str(session_id).encode('utf-8')
             session_id = sha256(session_id_bytes).digest()
 
+            print("session id: ",session_id)
+            print("type: ",type(session_id))
+
             self.cursor_sensor.execute(
                                             'INSERT INTO session_user_table (session_id) VALUES (?)', 
-                                            (str(session_id),)  # Un tuple avec une virgule
+                                            (session_id,)  # Un tuple avec une virgule
                                         )
             self.conn_with_bdd_sensor.commit()
             # Get last infos inserted
-            self.cursor_sensor.execute('SELECT * FROM session_user_table WHERE session_id = ?', (str(session_id),)) 
+            self.cursor_sensor.execute('SELECT * FROM session_user_table WHERE session_id = ?', (session_id,)) 
             rows = self.cursor_sensor.fetchone()
             index = rows[0]
 
@@ -296,15 +299,17 @@ class Sensor(resource.Resource):
         session_id = self.get_session_id_of_user(index=index)
         
         # Utiliser ast.literal_eval pour convertir depuis TEXT to Byte reèl
-        session_id_byte = eval(session_id)
+        #session_id_byte = eval(session_id)
 
         # Utiliser base64 pour interpréter le contenu de manière sécurisée
-        session_id_base64 = base64.b64encode(session_id_byte).decode('utf-8')
+        #session_id_base64 = base64.b64encode(session_id_byte).decode('utf-8')
+
+        print("-------------------------------------session ID: ",session_id)
         
 
         try:
             cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
-            result=cipher.decrypt(credential, associatedData=session_id_base64)
+            result=cipher.decrypt(credential, associatedData=session_id)
         except Exception as e:
             return "credential invalid"
         
@@ -349,13 +354,10 @@ class Sensor(resource.Resource):
         
          
         if int(RVO1)==int(RVO2):
-            print("before encode: ",session_id_base64)
-            
-            session_id_byte = session_id_base64.encode('utf-8')
 
-            print("after encode:",session_id_byte)
+            new_session_id = sha256(session_id).digest()
+            print("after hash :",new_session_id)
 
-            new_session_id = sha256(session_id_byte).digest()
             self.cursor_sensor.execute('update session_user_table set session_id=? WHERE user_index = ?', (new_session_id, index)) 
             self.conn_with_bdd_sensor.commit()
 

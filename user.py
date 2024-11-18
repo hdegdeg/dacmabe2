@@ -218,9 +218,17 @@ class User:
                 
                 index = decoded_response['index']
                 session_id = decoded_response['session_id']
-                self.cursor_user.execute('update access_token_user_table set index_session=?, session_id=? WHERE action_name = ? and obj_id=?', (index, str(session_id), action, obj_id))
+                session_id = eval(session_id)
+
+                print("session id: ",session_id)
+                print("type: ",type(session_id))
+
+                self.cursor_user.execute('update access_token_user_table set index_session=?, session_id=? WHERE action_name = ? and obj_id=?', (index, session_id, action, obj_id))
                 self.conn_with_bdd_user.commit()
+
+                return True
                 
+        return False
     
     async def request_access_to_action(self,action):
         id_obj = 0
@@ -246,8 +254,13 @@ class User:
 
         elif rows !=None and rows[6] == None:
              id_obj = rows[1]
-             await self.request_session_id_for_action(action=action, obj_id=id_obj)
-             await self.request_access_to_action(action)
+             is_generated = await self.request_session_id_for_action(action=action, obj_id=id_obj)
+             
+             if is_generated:
+                await self.request_access_to_action(action)
+             else: 
+                 print("can't generate session id")
+                 return 
 
         elif rows !=None:  # Indentation correcte ici
             
@@ -271,13 +284,15 @@ class User:
             cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
 
             # Utiliser ast.literal_eval pour convertir depuis TEXT to Byte reèl
-            byte_value = eval(session_id)
+            #byte_value = eval(session_id)
 
             # Utiliser base64 pour interpréter le contenu de manière sécurisée
-            base64_value = base64.b64encode(byte_value).decode('utf-8')
+            #base64_value = base64.b64encode(byte_value).decode('utf-8')
+
+            print("--------------------------------------session ID: ",session_id)
           
              
-            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=base64_value)
+            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=session_id)
 
             payload = {
                 "id_obj":id_obj,
@@ -293,14 +308,16 @@ class User:
             if(response_server.payload):
                 decoded_rep = response_server.payload.decode('utf-8')
 
-                if decoded_rep=='access granted':
-                    print("before byte: ",base64_value)
-                    session_id_bytes = str(base64_value).encode('utf-8')
-                    print("after byte: ",base64_value)
-                    new_session_id = sha256(session_id_bytes).digest()
-                    print("hashed: ",base64_value)
-                    self.cursor_user.execute('update access_token_user_table set session_id=? WHERE index_session = ?', (new_session_id, index_session)) 
-                    self.conn_with_bdd_user.commit()
+                if decoded_rep=='access granted': 
+
+                    new_session_id = sha256(session_id).digest()
+                    print("after hash :",new_session_id)
+
+                    
+                    self.cursor_user.execute('update access_token_user_table set session_id=? WHERE index_session = ?', (new_session_id, int(index_session))) 
+                    is_updated = self.conn_with_bdd_user.commit()
+                    print("data updated :",is_updated)
+                    
 
                 print("SENSOR RESPONSE: ",decoded_rep)
         #-----------------------------------------------------------------------------------
