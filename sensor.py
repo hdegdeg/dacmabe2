@@ -59,6 +59,10 @@ class Sensor(resource.Resource):
         try:
             data = json.loads(decodedDATA)
             event = data['event']
+            tag = eval(data['tag'])
+            cipher = eval(data['cipher'])
+
+            
         except json.JSONDecodeError:
             print("Erreur lors du décodage du JSON")
         
@@ -67,28 +71,45 @@ class Sensor(resource.Resource):
         # Simuler la génération d'un token en fonction de l'URI
         if 'request-access-to-action' == event:
 
-            action = data['action']
-            index_session = data['index_session']
-            credential = data['credential']
-            tag = data['tag']
-            response = self.check_access(credential=credential, tag=tag,action=action, index=index_session)
+            action = data['plain_data']['action']
+            index_session = data['plain_data']['index_session']
+            
+            response = self.check_access(credential=cipher, tag=tag,action=action, index=index_session)
 
             return Message(code=Code.CONTENT, payload= response.encode('utf-8'))
         
         elif 'generate-session-id' == event:
 
-            action = data['action']
+            print("-------------------------------------before decryption 2")
+            decrypted_data = self.symetric_decryption(ciphertext=cipher, mod=AES.MODE_GCM, tag=tag, with_static_key=True)
+            print("-------------------------------------after decryption 1")
+            decrypted_data = eval(decrypted_data)
+            print("-------------------------------------after decryption 2")
+            action = decrypted_data['action']
             index,session_id = self.generate_session_id(action=action)
 
-            response = {
+            user_session_id = {
                 "index":index,
                 "session_id":str(session_id)
             }
 
-            encoded_res =  json.dumps(response).encode('utf-8')
+            print("-------------------------------------after decryption 3")
 
-             
+            credentials_of_sensor_bytes = json.dumps(user_session_id).encode('utf-8')
+
+            encrypted_data,tag = self.symetric_encryption(data=credentials_of_sensor_bytes, mod=AES.MODE_GCM, with_static_key=True)
+
+            server_response = {
+                "cipher":str(encrypted_data),
+                "tag":str(tag)
+            }
+
+            encoded_res =  json.dumps(server_response).encode('utf-8')
+
+
             return Message(code=Code.CONTENT, payload= encoded_res)
+
+
               
 
 #---------------------------------------------------------------------------------------------------------
@@ -144,32 +165,38 @@ class Sensor(resource.Resource):
 
 #Request to generate token for actions
     async def request_to_generate_credentials_for_actions(self):
-            # Création du contexte client
-        protocol = await aiocoap.Context.create_client_context()
 
-        # Préparation du message
-        request = aiocoap.Message(code=aiocoap.POST, uri="coap://localhost:5683/call_fog")
-        # Création d'un dictionnaire et conversion en JSON puis en bytes
-        payload = {
-            "actions": self.actions,
-            "event": "generate-token-action"
+        data = {
+            "actions":self.actions
         }
-        request.payload = json.dumps(payload).encode('utf-8')
+
+        #------------------------------------------------------------------------------------------------------------------------------
+        actions_bytes = json.dumps(data).encode('utf-8')
+        encrypted_actions,tag = self.symetric_encryption(data=actions_bytes, mod=AES.MODE_GCM, with_static_key=True)
     
         # Envoi de la requête
-        response = await protocol.request(request).response
+        response = await self.post_request(event="generate-token-action", path="call_fog", port="5683", cipher=encrypted_actions, tag=tag)
 
-        server_response = response.payload.decode('utf-8')
+        decoded_response = response.payload.decode('utf-8')
+        json_response = json.loads(decoded_response)
 
-        decoded_response = json.loads(server_response)
 
-        id_obj = decoded_response['id_obj']
-        SU1 = decoded_response['SU1']
-        PRIME = decoded_response['PRIME']
+
+        cipher_byte = eval(json_response['cipher'])
+        tag_byte = eval(json_response['tag'])
+
+
+        decrypted_data = self.symetric_decryption(ciphertext=cipher_byte, mod=AES.MODE_GCM, tag=tag_byte, with_static_key=True)
+        decrypted_data = eval(decrypted_data)
+        #------------------------------------------------------------------------------------------------------------------------------
+
+        id_obj = decrypted_data['id_obj']
+        SU1 = decrypted_data['SU1']
+        PRIME = decrypted_data['PRIME']
 
         #insert Action,Token,RVO in table action_token
-        decoded_response["token_bytes"] = base64.b64decode(decoded_response["token_bytes"])
-        tokens_of_action = bytesToObject(decoded_response["token_bytes"], self.group)
+        decrypted_data["token_bytes"] = base64.b64decode(decrypted_data["token_bytes"])
+        tokens_of_action = bytesToObject(decrypted_data["token_bytes"], self.group)
 
         #print("Réponse du serveur :", tokens_of_action)
 
@@ -285,9 +312,15 @@ class Sensor(resource.Resource):
         return _lagrange_interpolation(0, x_s, y_s)
     
 #-----------------------------------------------------------------------------------------  SYMETRIC ENCRYPTION
-    def symetric_encryption(self, mod, data, key, nonce):
+    def symetric_encryption(self, mod, data, key='', nonce='', with_static_key=False):
+
+        if with_static_key:
+            with open("keys/symtric_key.bin", "rb") as f:
+                nonce = f.read(15)
+                key = f.read()
+
         # Transformation du numéro de session en nonce de 15 octets
-        nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
 
         # Initialisation du chiffrement AES en mode OCB
         cipher = AES.new(key, mod, nonce=nonce)
@@ -295,7 +328,13 @@ class Sensor(resource.Resource):
 
         return ciphertext, tag
 
-    def symetric_decryption(self, mod, ciphertext, tag, key, nonce):
+    def symetric_decryption(self, mod, ciphertext, tag, key='', nonce='', with_static_key=False):
+
+        if with_static_key:
+            with open("keys/symtric_key.bin", "rb") as f:
+                nonce = f.read(15)
+                key = f.read()
+
         # Transformation du numéro de session en nonce de 15 octets
         #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
 
@@ -303,7 +342,6 @@ class Sensor(resource.Resource):
         try:
             print("-----------------------------------------------before decrypt")
             message = cipher.decrypt_and_verify(ciphertext, tag)
-            print("-----------------------------------------------after decrypt: ",message)
             return message
         except ValueError:
             return "The message was modified!" 
@@ -341,10 +379,8 @@ class Sensor(resource.Resource):
         try:
             #cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
             #result=cipher.decrypt(credential, associatedData=session_id)
-            credential_byte =  eval(credential)
-            tag_byte =  eval(tag)
 
-            result= self.symetric_decryption(ciphertext=credential_byte, tag=tag_byte, nonce=session_id, key=hashed_key, mod=AES.MODE_GCM)
+            result= self.symetric_decryption(ciphertext=credential, tag=tag, nonce=session_id, key=hashed_key, mod=AES.MODE_GCM)
             
         except Exception as e:
             return "credential invalid"
@@ -400,6 +436,30 @@ class Sensor(resource.Resource):
             return "access granted"
         else:
             return "you don't have access "
+        
+    async def post_request(self, port, path, cipher, tag, event):
+        #-----------------------------------------------------------------------------------
+            # Création du contexte client
+            protocol = await aiocoap.Context.create_client_context()
+            uri = f"coap://localhost:{port}/{path}"
+            print("URI: ",uri)
+            # Préparation du message
+            request = aiocoap.Message(code=aiocoap.POST, uri=uri)
+
+            payload= {
+                "cipher":str(cipher),
+                "tag":str(tag),
+                "event":event
+            }
+            
+            request.payload = json.dumps(payload).encode('utf-8')
+        
+            # Envoi de la requête
+            response = await protocol.request(request).response
+
+            print("response: ",response)
+
+            return response
 
 async def main():
 

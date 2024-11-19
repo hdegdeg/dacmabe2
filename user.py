@@ -129,42 +129,48 @@ class User:
 
 #Request credential of action from Fog
     async def request_credential_of_action(self,action):
-        # Création du contexte client
-        protocol = await aiocoap.Context.create_client_context()
-
-        # Préparation du message
-        request = aiocoap.Message(code=aiocoap.POST, uri="coap://localhost:5683/call_fog")
+        
         # Création d'un dictionnaire et conversion en JSON puis en bytes
-        payload = {
+        data = {
             "action":action,
             "id_obj":"2007704412",
-            "event": "generate-credential-user"
         }
-        request.payload = json.dumps(payload).encode('utf-8')
+        
+        #------------------------------------------------------------------------
+        data_bytes = json.dumps(data).encode('utf-8')
+        encrypted_actions,tag = self.symetric_encryption(data=data_bytes, mod=AES.MODE_GCM, with_static_key=True)
+        
     
         # Envoi de la requête
-        response = await protocol.request(request).response
+        response = await self.post_request(event="generate-credential-user", path="call_fog", port="5683", cipher=encrypted_actions, tag=tag)
 
-        server_response = response.payload.decode('utf-8')
+        print("-----------------------------------------------------------response fog: ",response)
 
-        print("server_response:",server_response)
+        decoded_response = response.payload.decode('utf-8')
+        json_response = json.loads(decoded_response)
 
-        decoded_response = json.loads(server_response)
+        cipher_byte = eval(json_response['cipher'])
+        tag_byte = eval(json_response['tag'])
 
-        decoded_response["token_bytes"] = base64.b64decode(decoded_response["token_bytes"])
+
+        decrypted_data = self.symetric_decryption(ciphertext=cipher_byte, mod=AES.MODE_GCM, tag=tag_byte, with_static_key=True)
+        decrypted_data = eval(decrypted_data)
+        #------------------------------------------------------------------------
+
+        decrypted_data["token_bytes"] = base64.b64decode(decrypted_data["token_bytes"])
 
         self.store_access_token(
-            id_obj=decoded_response["id_obj"], 
-            action=decoded_response["action"],
-            su2=decoded_response["SU2"],
-            tc=decoded_response["TC"],
-            token=self.decrypt_token_for_action(key_value=decoded_response["token_bytes"])
+            id_obj=decrypted_data["id_obj"], 
+            action=decrypted_data["action"],
+            su2=decrypted_data["SU2"],
+            tc=decrypted_data["TC"],
+            token=self.decrypt_token_for_action_ma_abe(key_value=decrypted_data["token_bytes"])
             )
 
-        return decoded_response
+        return decrypted_data
 
 #Decypte token with MA-ABE
-    def decrypt_token_for_action(self,key_value):
+    def decrypt_token_for_action_ma_abe(self,key_value):
         
         # Lire le fichier et afficher le contenu
         orig_cipher = bytesToObject(key_value, self.group)
@@ -201,28 +207,36 @@ class User:
 
 #Store Decrypted Key
     async def request_session_id_for_action(self, action, obj_id):
-        payload = {
+        data = {
             "action":action,
             "event":"generate-session-id"
         }
-        
-        response_server = await self.post_request(port='5684', path='call_sensor', payload=payload)
-        print("payload: ",response_server.payload)
-        
-        if(response_server.payload):
-                server_response = response_server.payload.decode('utf-8')
 
-                print("server_response:",server_response)
-
-                decoded_response = json.loads(server_response)
+        #------------------------------------------------------------------------
+        data_bytes = json.dumps(data).encode('utf-8')
+        encrypted_actions,tag = self.symetric_encryption(data=data_bytes, mod=AES.MODE_GCM, with_static_key=True)
         
-                
-                print("index: ",decoded_response['index'])
-                print("index: ",decoded_response['session_id'])
+    
+        # Envoi de la requête
+        response = await self.post_request(event="generate-session-id", path="call_sensor", port="5684", cipher=encrypted_actions, tag=tag)
 
-                
-                index = decoded_response['index']
-                session_id = decoded_response['session_id']
+        decoded_response = response.payload.decode('utf-8')
+        json_response = json.loads(decoded_response)
+
+        cipher_byte = eval(json_response['cipher'])
+        tag_byte = eval(json_response['tag'])
+
+
+        decrypted_data = self.symetric_decryption(ciphertext=cipher_byte, mod=AES.MODE_GCM, tag=tag_byte, with_static_key=True)
+        decrypted_data = eval(decrypted_data)
+        #------------------------------------------------------------------------
+        
+      
+        
+        if(decoded_response):
+
+                index = decrypted_data['index']
+                session_id = decrypted_data['session_id']
                 session_id = eval(session_id)
 
                 print("session id: ",session_id)
@@ -233,31 +247,7 @@ class User:
 
                 return True
                 
-        return False
-
-#-----------------------------------------------------------------------------------------  SYMETRIC ENCRYPTION
-    def symetric_encryption(self, mod, data, key, nonce):
-        # Transformation du numéro de session en nonce de 15 octets
-        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
-
-        # Initialisation du chiffrement AES en mode OCB
-        cipher = AES.new(key, mod, nonce=nonce)
-        ciphertext, tag = cipher.encrypt_and_digest(data.encode())
-
-        return ciphertext, tag
-
-    def symetric_decryption(self, mod, ciphertext, tag, key, nonce):
-        # Transformation du numéro de session en nonce de 15 octets
-        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
-
-        cipher = AES.new(key, mod, nonce=nonce)
-        try:
-            message = cipher.decrypt_and_verify(ciphertext, tag)
-            return message
-        except ValueError:
-            return "The message was modified!" 
-
-#-----------------------------------------------------------------------------------------           
+        return False       
 
   
     async def request_access_to_action(self,action):
@@ -276,7 +266,7 @@ class User:
         if rows == None :
             print("credentials dosn't exist")
             response = await self.request_credential_of_action(action=action)
-            decrypted_token = self.decrypt_token_for_action(response['token_bytes'])
+            decrypted_token = self.decrypt_token_for_action_ma_abe(response['token_bytes'])
 
             if decrypted_token:
                 print("get credential and try to access")
@@ -302,45 +292,29 @@ class User:
             index_session = rows[6]
             session_id = rows[7]
 
+            
+            
+            print("token from BDD (USER): ",token)
+
+
             credential = {
                 "SU2":SU2,
                 "TC":TC,
             }
 
+            #------------------------------------------------------------------------
+            data_bytes = json.dumps(credential).encode('utf-8')
             hashed_key = sha256(objectToBytes(token, self.group)).digest()
+            encrypted_actions,tag = self.symetric_encryption(data=data_bytes, mod=AES.MODE_GCM, key=hashed_key, nonce=session_id, with_static_key=False)
             
-            print("token from BDD (USER): ",token)
-
-            
-
-            # Utiliser ast.literal_eval pour convertir depuis TEXT to Byte reèl
-            #byte_value = eval(session_id)
-
-            # Utiliser base64 pour interpréter le contenu de manière sécurisée
-            #base64_value = base64.b64encode(byte_value).decode('utf-8')
-
-            print("--------------------------------------session ID: ",session_id)
-
-            cipher_text,tag = self.symetric_encryption(data=str(credential), key=hashed_key, nonce=session_id, mod=AES.MODE_GCM)
-            
-            """
-            cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
-            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=session_id,)
-            """
-
-            payload = {
+            plain_data = {
                 "id_obj":id_obj,
                 "action":action,
-                "index_session":index_session,
-                "credential":str(cipher_text),
-                "tag":str(tag),
-                "event":'request-access-to-action'
+                "index_session":index_session
             }
-            print("cipher: ",cipher_text)
-            print("tag: ",tag )
+            # Envoi de la requête
+            response_server = await self.post_request(event="request-access-to-action", path="call_sensor", port="5684", cipher=encrypted_actions, tag=tag, plain_data=plain_data)
 
-            #call sensor server
-            response_server = await self.post_request(port='5684', path='call_sensor', payload=payload)
 
             if(response_server.payload):
                 decoded_rep = response_server.payload.decode('utf-8')
@@ -363,7 +337,44 @@ class User:
         print(result)
         """
     
-    async def post_request(self, port, path, payload):
+
+    #-----------------------------------------------------------------------------------------  SYMETRIC ENCRYPTION
+    def symetric_encryption(self, mod, data, key='', nonce='', with_static_key=False):
+
+        if with_static_key:
+            with open("keys/symtric_key.bin", "rb") as f:
+                nonce = f.read(15)
+                key = f.read()
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        # Initialisation du chiffrement AES en mode OCB
+        cipher = AES.new(key, mod, nonce=nonce)
+        ciphertext, tag = cipher.encrypt_and_digest(data)
+
+        return ciphertext, tag
+
+    def symetric_decryption(self, mod, ciphertext, tag, key='', nonce='', with_static_key=False):
+
+        if with_static_key:
+            with open("keys/symtric_key.bin", "rb") as f:
+                nonce = f.read(15)
+                key = f.read()
+
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        cipher = AES.new(key, mod, nonce=nonce)
+        try:
+            print("-----------------------------------------------before decrypt")
+            message = cipher.decrypt_and_verify(ciphertext, tag)
+            return message
+        except ValueError:
+            return "The message was modified!"  
+
+    #-----------------------------------------------------------------------------------------    
+
+    async def post_request(self, port, path, cipher, tag, event,plain_data=''):
         #-----------------------------------------------------------------------------------
             # Création du contexte client
             protocol = await aiocoap.Context.create_client_context()
@@ -371,6 +382,13 @@ class User:
             print("URI: ",uri)
             # Préparation du message
             request = aiocoap.Message(code=aiocoap.POST, uri=uri)
+
+            payload= {
+                "cipher":str(cipher),
+                "tag":str(tag),
+                "event":event,
+                "plain_data":plain_data
+            }
             
             request.payload = json.dumps(payload).encode('utf-8')
         

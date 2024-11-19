@@ -23,6 +23,10 @@ from aiocoap import *
 from aiocoap import Context, Message, resource
 from aiocoap.numbers.codes import Code
 from aiocoap.oscore import BaseSecurityContext
+import sys
+from Crypto.Cipher import AES
+from Crypto.Hash import HMAC, SHA256
+from Crypto.Random import get_random_bytes
 
 # Ajouter le chemin du dossier `aiocoap` au chemin de recherche de Python
 aiocoap_path = Path("/home/charm/workspace/python_projects/aiocoap")
@@ -73,6 +77,14 @@ class FogNode(resource.Resource):
         try:
             data = json.loads(decodedDATA)
             event = data['event']
+            tag = eval(data['tag'])
+
+            cipher_byte = eval(data['cipher'])
+
+            data = self.symetric_decryption(ciphertext=cipher_byte, mod=AES.MODE_GCM, tag=tag, with_static_key=True)
+            data = eval(data)
+          
+            
         except json.JSONDecodeError:
             print("Erreur lors du décodage du JSON")
 
@@ -82,25 +94,36 @@ class FogNode(resource.Resource):
 
         # Simuler la génération d'un token en fonction de l'URI
         if 'generate-token-action' == event:
-
             actions_list = data['actions']
+            
             (action_token_dict, SU1, PRIME, id_obj) = self.generate_token_for_action(actions_list)
             
             #Convert token to byte,
-            token_bytes = objectToBytes(action_token_dict, self.group)
+            tokens_of_actions_bytes = objectToBytes(action_token_dict, self.group)
             print("action_token_dict: ",action_token_dict)
 
-            server_response = {
-                "token_bytes":token_bytes,
+            credentials_of_sensor = {
+                "token_bytes":tokens_of_actions_bytes,
                 "SU1":SU1,
                 "PRIME":PRIME,
                 "id_obj":id_obj
             }
-
             
-            server_response["token_bytes"] = base64.b64encode(server_response["token_bytes"]).decode('utf-8')
+            
+            credentials_of_sensor["token_bytes"] = base64.b64encode(credentials_of_sensor["token_bytes"]).decode('utf-8')
+
+            credentials_of_sensor_bytes = json.dumps(credentials_of_sensor).encode('utf-8')
+
+            encrypted_data,tag = self.symetric_encryption(data=credentials_of_sensor_bytes, mod=AES.MODE_GCM, with_static_key=True)
+
+            server_response = {
+                "cipher":str(encrypted_data),
+                "tag":str(tag)
+            }
 
             encoded_res =  json.dumps(server_response).encode('utf-8')
+
+            #request.payload = self.symetric_encryption(data=payload_to_json, mod=AES.MODE_GCM, with_static_key=True)
 
             return Message(code=Code.CONTENT, payload= encoded_res)
 
@@ -110,7 +133,7 @@ class FogNode(resource.Resource):
             (SU2, TC, action_token_dict) = self.generate_credential_for_user(action=action, id_obj=id_obj)
             
             print("SU2: ",SU2)
-            server_response = {
+            credentials_of_sensor = {
                 "SU2":str(SU2),
                 "TC":TC,
                 "token_bytes":action_token_dict,
@@ -118,7 +141,16 @@ class FogNode(resource.Resource):
                 "action":action,
             }
 
-            server_response["token_bytes"] = base64.b64encode(server_response["token_bytes"]).decode('utf-8')
+            credentials_of_sensor["token_bytes"] = base64.b64encode(credentials_of_sensor["token_bytes"]).decode('utf-8')
+
+            credentials_of_sensor_bytes = json.dumps(credentials_of_sensor).encode('utf-8')
+
+            encrypted_data,tag = self.symetric_encryption(data=credentials_of_sensor_bytes, mod=AES.MODE_GCM, with_static_key=True)
+
+            server_response = {
+                "cipher":str(encrypted_data),
+                "tag":str(tag)
+            }
 
             encoded_res =  json.dumps(server_response).encode('utf-8')
 
@@ -317,7 +349,41 @@ class FogNode(resource.Resource):
 
         return  SU2[0], TC, Token
 
+#-----------------------------------------------------------------------------------------  SYMETRIC ENCRYPTION
+    def symetric_encryption(self, mod, data, key='', nonce='', with_static_key=False):
 
+        if with_static_key:
+            with open("keys/symtric_key.bin", "rb") as f:
+                nonce = f.read(15)
+                key = f.read()
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        # Initialisation du chiffrement AES en mode OCB
+        cipher = AES.new(key, mod, nonce=nonce)
+        ciphertext, tag = cipher.encrypt_and_digest(data)
+
+        return ciphertext, tag
+
+    def symetric_decryption(self, mod, ciphertext, tag, key='', nonce='', with_static_key=False):
+
+        if with_static_key:
+            with open("keys/symtric_key.bin", "rb") as f:
+                nonce = f.read(15)
+                key = f.read()
+
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        cipher = AES.new(key, mod, nonce=nonce)
+        try:
+            print("-----------------------------------------------before decrypt")
+            message = cipher.decrypt_and_verify(ciphertext, tag)
+            return message
+        except ValueError:
+            return "The message was modified!" 
+
+#-----------------------------------------------------------------------------------------    
 
 """        
 #------------------------------------------------------------------------------------------------------------------------------------
@@ -344,6 +410,24 @@ if __name__ == "__main__":
     main()
 """
 async def main():
+
+
+    aes_key = get_random_bytes(16)
+
+    static_nonce=123456789
+    nonce = static_nonce.to_bytes(15, byteorder='big', signed=False)
+
+    # S'assurer que le dossier existe
+    is_exist = os.makedirs(os.path.dirname("keys/symtric_key.bin"), exist_ok=True)
+    print("file exist")
+    
+    if is_exist==False:
+        with open("keys/symtric_key.bin", "wb") as f:
+            f.write(aes_key)
+            f.write(nonce)
+    
+
+
     # creation of object FogNode 
     fog = FogNode('SS512', MaabeRW15)
 
