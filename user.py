@@ -12,6 +12,11 @@ import os
 import sqlite3
 from hashlib import sha256
 import charm.toolbox.symcrypto
+import sys
+from Crypto.Cipher import AES
+from Crypto.Hash import HMAC, SHA256
+from Crypto.Random import get_random_bytes
+
 
 # Ajouter le chemin du dossier `aiocoap` au chemin de recherche de Python
 aiocoap_path = Path("/home/charm/workspace/python_projects/aiocoap")
@@ -229,7 +234,32 @@ class User:
                 return True
                 
         return False
-    
+
+#-----------------------------------------------------------------------------------------  SYMETRIC ENCRYPTION
+    def symetric_encryption(self, mod, data, key, nonce):
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        # Initialisation du chiffrement AES en mode OCB
+        cipher = AES.new(key, mod, nonce=nonce)
+        ciphertext, tag = cipher.encrypt_and_digest(data.encode())
+
+        return ciphertext, tag
+
+    def symetric_decryption(self, mod, ciphertext, tag, key, nonce):
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        cipher = AES.new(key, mod, nonce=nonce)
+        try:
+            message = cipher.decrypt_and_verify(ciphertext, tag)
+            return message
+        except ValueError:
+            return "The message was modified!" 
+
+#-----------------------------------------------------------------------------------------           
+
+  
     async def request_access_to_action(self,action):
         id_obj = 0
         token = ''
@@ -281,7 +311,7 @@ class User:
             
             print("token from BDD (USER): ",token)
 
-            cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
+            
 
             # Utiliser ast.literal_eval pour convertir depuis TEXT to Byte reèl
             #byte_value = eval(session_id)
@@ -290,17 +320,24 @@ class User:
             #base64_value = base64.b64encode(byte_value).decode('utf-8')
 
             print("--------------------------------------session ID: ",session_id)
-          
-             
-            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=session_id)
+
+            cipher_text,tag = self.symetric_encryption(data=str(credential), key=hashed_key, nonce=session_id, mod=AES.MODE_GCM)
+            
+            """
+            cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
+            ciphertextAssociatedData = cipher.encrypt(str(credential), associatedData=session_id,)
+            """
 
             payload = {
                 "id_obj":id_obj,
                 "action":action,
                 "index_session":index_session,
-                "credential":ciphertextAssociatedData,
+                "credential":str(cipher_text),
+                "tag":str(tag),
                 "event":'request-access-to-action'
             }
+            print("cipher: ",cipher_text)
+            print("tag: ",tag )
 
             #call sensor server
             response_server = await self.post_request(port='5684', path='call_sensor', payload=payload)

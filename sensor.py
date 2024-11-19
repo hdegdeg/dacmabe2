@@ -20,6 +20,10 @@ import charm.toolbox.symcrypto
 import ast
 from typing import List, Tuple
 import random
+import sys
+from Crypto.Cipher import AES
+from Crypto.Hash import HMAC, SHA256
+from Crypto.Random import get_random_bytes
 
 class Sensor(resource.Resource):
     def __init__(self,group,actions):
@@ -66,7 +70,8 @@ class Sensor(resource.Resource):
             action = data['action']
             index_session = data['index_session']
             credential = data['credential']
-            response = self.check_access(credential=credential, action=action, index=index_session)
+            tag = data['tag']
+            response = self.check_access(credential=credential, tag=tag,action=action, index=index_session)
 
             return Message(code=Code.CONTENT, payload= response.encode('utf-8'))
         
@@ -278,8 +283,34 @@ class Sensor(resource.Resource):
             raise ValueError("Not enough shares to reconstruct the secret!")
         x_s, y_s = zip(*shares)
         return _lagrange_interpolation(0, x_s, y_s)
+    
+#-----------------------------------------------------------------------------------------  SYMETRIC ENCRYPTION
+    def symetric_encryption(self, mod, data, key, nonce):
+        # Transformation du numéro de session en nonce de 15 octets
+        nonce = nonce.to_bytes(15, byteorder='big', signed=False)
 
-    def check_access(self, credential, action,index):
+        # Initialisation du chiffrement AES en mode OCB
+        cipher = AES.new(key, mod, nonce=nonce)
+        ciphertext, tag = cipher.encrypt_and_digest(data)
+
+        return ciphertext, tag
+
+    def symetric_decryption(self, mod, ciphertext, tag, key, nonce):
+        # Transformation du numéro de session en nonce de 15 octets
+        #nonce = nonce.to_bytes(15, byteorder='big', signed=False)
+
+        cipher = AES.new(key, mod, nonce=nonce)
+        try:
+            print("-----------------------------------------------before decrypt")
+            message = cipher.decrypt_and_verify(ciphertext, tag)
+            print("-----------------------------------------------after decrypt: ",message)
+            return message
+        except ValueError:
+            return "The message was modified!" 
+
+#-----------------------------------------------------------------------------------------    
+
+    def check_access(self, credential, tag, action,index):
 
         # Récupération du chemin de fichier depuis la base de données
         self.cursor_sensor.execute('SELECT * FROM action_token_table WHERE action_name = ?', (action,)) 
@@ -308,8 +339,13 @@ class Sensor(resource.Resource):
         
 
         try:
-            cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
-            result=cipher.decrypt(credential, associatedData=session_id)
+            #cipher = charm.toolbox.symcrypto.AuthenticatedCryptoAbstraction(hashed_key)
+            #result=cipher.decrypt(credential, associatedData=session_id)
+            credential_byte =  eval(credential)
+            tag_byte =  eval(tag)
+
+            result= self.symetric_decryption(ciphertext=credential_byte, tag=tag_byte, nonce=session_id, key=hashed_key, mod=AES.MODE_GCM)
+            
         except Exception as e:
             return "credential invalid"
         
@@ -379,10 +415,9 @@ async def main():
     await sensor.request_to_generate_credentials_for_actions( )
     
     
-
     #server_response["token_bytes"] = base64.b64decode(server_response["token_bytes"]).decode('utf-8')
 
     #print("with decoded token in byte: ",encoded_res["token_bytes"])
-
+ 
 if __name__ == "__main__":
     asyncio.run(main())
