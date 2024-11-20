@@ -24,7 +24,7 @@ sys.path.insert(0, str(aiocoap_path))
 
 
 class User:
-    def __init__(self,group):
+    def __init__(self,group,gid):
         self.group = PairingGroup(group) 
         self.maabe = MaabeRW15(self.group)
 
@@ -37,7 +37,7 @@ class User:
         self.public_parameters, self.secret_key1, self.secret_key2 = self.get_public_params()
 
         # Setup d'un utilisateur et attribution des clés
-        self.gid = "bob"
+        self.gid = gid
         self.user_attributes1 = ['STUDENT@UT', 'PHD@UT']
         self.user_attributes2 = ['STUDENT@OU']
         self.user_keys1 = self.maabe.multiple_attributes_keygen(self.public_parameters, self.secret_key1, self.gid, self.user_attributes1)
@@ -401,23 +401,9 @@ class User:
 
 async def main():
 
-    user = User('SS512')
-    """
-    
-    """
-    #print("decrypted_toekn :", decrypted_token)
-
+    user = User('SS512','u1')
     await user.request_access_to_action(action="action3")
-    """
-    group = PairingGroup('SS512')
-
-    tokens = bytesToObject(decoded_response["token_bytes"], group)
-    print("Decoded binary_data:", tokens)
-  
-    """
-    #server_response["token_bytes"] = base64.b64decode(server_response["token_bytes"]).decode('utf-8')
-
-    #print("with decoded token in byte: ",encoded_res["token_bytes"])
+    
 
 if __name__ == "__main__":
     asyncio.run(main())

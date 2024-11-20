@@ -33,25 +33,34 @@ aiocoap_path = Path("/home/charm/workspace/python_projects/aiocoap")
 sys.path.insert(0, str(aiocoap_path))
 
 class FogNode(resource.Resource):
-    def __init__(self, group: str, scheme=MaabeRW15):
+    def __init__(self, group: str, authorities=[], node_name=''):
         """
         Initialisation du nœud Fog avec le schéma MA-ABE et une base de données SQLite.
         """
 
         # Définir le chemin de la base de données
         self.base_path = '/home/charm/workspace/python_projects/dacmabe'
-        db_path = os.path.join(self.base_path, 'databases/fogs', 'fog_database.db')
+        db_path = os.path.join(self.base_path, f'databases/fogs/{node_name}', 'fog_database.db')
 
 
         # Initialisation du groupe et du schéma MA-ABE
         self.group = PairingGroup(group)
-        self.maabe = scheme(self.group)
+        self.maabe = MaabeRW15(self.group)
 
         # Appel de la fonction
-        self.public_parameters, self.public_keys = self.get_public_params()
-
+        self.public_parameters = self.get_public_params()
         
+        self.authaurities_keys = {}
+        for auth in authorities:
+            self.authaurities_keys[auth] = self.get_public_keys(auth_name=auth)
+           
 
+
+        access_policy1='(ONE@AUTH1 or THREE@AUTH2) and (ONE@AUTH2 or TWO@AUTH3)'
+        access_policy2='(ONE@AUTH2 or TWO@AUTH3) and (FOR@AUTH1 or THREE@AUTH2)'
+        access_policy3='(FIVE@AUTH3 or FOR@AUTH1) and (ONE@AUTH1 or FIVE@AUTH2)'
+
+        self.access_policies = [access_policy1, access_policy2, access_policy3]
         # S'assurer que le dossier existe
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
@@ -206,28 +215,34 @@ class FogNode(resource.Resource):
             print("Connexion à la base de données fermée.")
     
     def get_public_params(self):
-        with open(os.path.join(self.base_path, 'authority_params/public_params_auth.json'),'r') as file:
+        with open(os.path.join(self.base_path, 'public_params/public_params.json'),'r') as file:
             params = file.read()
             orig_params = bytesToObject(params, self.group)
 
             # Remplacer les lambdas fictives H et F par des lambdas fonctionnelles
             orig_params['H'] = lambda x: self.group.hash(x, G2)
-            orig_params['F'] = lambda x: self.group.hash(x, G2)
+            orig_params['F'] = lambda x: self.group.hash(x, G2)    
+            
+        return orig_params
+    
+    def get_public_keys(self,auth_name):
+
+        path_file = f'authority_params/{auth_name}/public_key.json'
         
-        with open(os.path.join(self.base_path, 'authority_params/public_keys.json'), 'r') as file:
+        with open(os.path.join(self.base_path, path_file), 'r') as file:
             public_keys = file.read()
             orig_public_keys = bytesToObject(public_keys, self.group)
             
             
-        return orig_params, orig_public_keys
+        return orig_public_keys
 
 
 #-----------------------------------------------------------GENERATE TOKENS FOR ACTIONS----------------------------------------------------    
     def generate_token_for_action(self,actions):
         
-        #id_obj=random.getrandbits(32)
-        id_obj = 2007704412
-        access_policy='(STUDENT@UT or PROFESSOR@OU) and (STUDENT@UT or MASTERS@OU)'
+        id_obj=random.getrandbits(32)
+        #id_obj = 2007704412
+        #access_policy= random.choice(self.access_policies) 
         action_token_dict={}
 
         #-----------------------------------Generate tokens and random values for every action
@@ -239,7 +254,16 @@ class FogNode(resource.Resource):
             RVO = random.getrandbits(256)
             
             # Chiffrement du message avec MA-ABE
-            cipher_text = self.maabe.encrypt(self.public_parameters, self.public_keys, message1, access_policy)
+            access_policy= random.choice(self.access_policies) 
+            public_k = self.get_public_keys("AUTH1")
+
+            print("public key: ",public_k)
+            print("type: ",type(public_k))
+            print("type egga: ",type(public_k['egga']))
+
+            
+
+            cipher_text = self.maabe.encrypt(self.public_parameters, self.authaurities_keys, message1, access_policy)
 
             serialized_message = objectToBytes(cipher_text, self.group)
 
@@ -385,30 +409,23 @@ class FogNode(resource.Resource):
 
 #-----------------------------------------------------------------------------------------    
 
-"""        
-#------------------------------------------------------------------------------------------------------------------------------------
-def main():
-    fog = FogNode('SS512', MaabeRW15)
-    print("Nœud Fog initialisé avec succès.")
-    fog.generate_token_for_action( actions=["action1","action2","action3"],id_obj=1 ,access_policy='(STUDENT@UT or PROFESSOR@OU) and (STUDENT@UT or MASTERS@OU)' )
-    # Crée une instance de FogNode
+    async def init_node(self,port):
+        # Création du serveur CoAP
+        root = resource.Site()
 
-    (SU2, TC, Token) = fog.generate_credential_for_user(id_obj=1, action="action1")
+        # Ajouter la ressource 'generate-test' et l'associer à la méthode 'render_post' de FogNode
+        root.add_resource(['call_fog'], self)
 
-    print("-------Token: ",Token," \n\n-----TC: ",TC,"\n\n----SU2: ",SU2)
-    try:
-        print("")
-    except Exception as e:
-        print(f"Erreur lors de l'initialisation du nœud Fog : {e}")
-    finally:
-        if 'fog' in locals():
-            fog.close_connection()
+        # Création du contexte de sécurité (OSCORE)
+        context = await Context.create_server_context(root, bind=("localhost", port))
+        context.oscore = BaseSecurityContext()  # Assurez-vous de spécifier le bon répertoire de clés
+
+        print("Serveur Fog en écoute...")
+
+        # Maintenir le serveur actif
+        await asyncio.get_running_loop().create_future()
 
 
-if __name__ == "__main__":
-    print("Le script démarre...")
-    main()
-"""
 async def main():
 
 
@@ -427,24 +444,11 @@ async def main():
             f.write(nonce)
     
 
-
     # creation of object FogNode 
-    fog = FogNode('SS512', MaabeRW15)
+    fog = FogNode(group='SS512',authorities=["AUTH1","AUTH2","AUTH3"], node_name="node1")
+    await fog.init_node(port=5683)
 
-    # Création du serveur CoAP
-    root = resource.Site()
-
-    # Ajouter la ressource 'generate-test' et l'associer à la méthode 'render_post' de FogNode
-    root.add_resource(['call_fog'], fog)
-
-    # Création du contexte de sécurité (OSCORE)
-    context = await Context.create_server_context(root, bind=("localhost", 5683))
-    context.oscore = BaseSecurityContext()  # Assurez-vous de spécifier le bon répertoire de clés
-
-    print("Serveur Fog en écoute...")
-
-     # Maintenir le serveur actif
-    await asyncio.get_running_loop().create_future()
+    
 
 if __name__ == "__main__":
     asyncio.run(main())

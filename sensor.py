@@ -26,13 +26,13 @@ from Crypto.Hash import HMAC, SHA256
 from Crypto.Random import get_random_bytes
 
 class Sensor(resource.Resource):
-    def __init__(self,group,actions):
+    def __init__(self,group,actions,sensor_name):
         self.group = PairingGroup(group)
         self.actions = actions
 
         # Connexion à la base de données SQLite (la base sera créée si elle n'existe pas)
         self.base_path='/home/charm/workspace/python_projects/dacmabe'  
-        self.db_path_user = os.path.join(self.base_path, 'databases/sensors', 'usensor_database.db')
+        self.db_path_user = os.path.join(self.base_path, f'databases/sensors/{sensor_name}', 'sensor_database.db')
 
         # S'assurer que le dossier existe
         os.makedirs(os.path.dirname(self.db_path_user), exist_ok=True)
@@ -80,11 +80,9 @@ class Sensor(resource.Resource):
         
         elif 'generate-session-id' == event:
 
-            print("-------------------------------------before decryption 2")
+            
             decrypted_data = self.symetric_decryption(ciphertext=cipher, mod=AES.MODE_GCM, tag=tag, with_static_key=True)
-            print("-------------------------------------after decryption 1")
             decrypted_data = eval(decrypted_data)
-            print("-------------------------------------after decryption 2")
             action = decrypted_data['action']
             index,session_id = self.generate_session_id(action=action)
 
@@ -178,6 +176,7 @@ class Sensor(resource.Resource):
         response = await self.post_request(event="generate-token-action", path="call_fog", port="5683", cipher=encrypted_actions, tag=tag)
 
         decoded_response = response.payload.decode('utf-8')
+        print("----------------------------------response: ",decoded_response)
         json_response = json.loads(decoded_response)
 
 
@@ -464,7 +463,8 @@ class Sensor(resource.Resource):
 async def main():
 
     sensor = Sensor(
-        group='SS512', 
+        group='SS512',
+        sensor_name="sensor1",
         actions=[
             "action1",
             "action2",
@@ -472,7 +472,7 @@ async def main():
         ]
         )
     
-    await sensor.request_to_generate_credentials_for_actions( )
+    await sensor.request_to_generate_credentials_for_actions()
     
     
     #server_response["token_bytes"] = base64.b64decode(server_response["token_bytes"]).decode('utf-8')
